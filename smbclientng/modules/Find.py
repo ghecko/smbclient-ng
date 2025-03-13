@@ -8,6 +8,7 @@
 import os
 import ntpath
 import re
+from pathlib import Path, PureWindowsPath
 from smbclientng.core.Module import Module
 from smbclientng.core.ModuleArgumentParser import ModuleArgumentParser
 from smbclientng.core.utils import windows_ls_entry, smb_entry_iterator
@@ -52,9 +53,6 @@ class Find(Module):
                           "DEPTH specifies the recursion depth (-1 for all depths, default is 0). "
                           "CASE can be 'i' for case-insensitive or 's' for case-sensitive (default). "
                           "Format: DIRNAME[:DEPTH[:CASE]]"))
-        # parser.add_argument("-mtime", type=str, help="File's data was last modified n*24 hours ago")
-        # parser.add_argument("-ctime", type=str, help="File's status was last changed n*24 hours ago")
-        # parser.add_argument("-atime", type=str, help="File was last accessed n*24 hours ago")
 
         # Adding actions
         parser.add_argument("-ls", action="store_true", default=False, help="List current file in ls -dils format on standard output.")
@@ -137,7 +135,15 @@ class Find(Module):
 
             try:
                 exclusion_rules = self.parse_exclude_dirs(self.options.exclude_dir)
-                start_paths = self.options.paths or [self.smbSession.smb_cwd]
+
+                start_paths = []
+                if self.options.paths:
+                    for path in self.options.paths:
+                        if not os.path.isabs(path):
+                            path = os.path.join(self.smbSession.smb_cwd, path)
+                        start_paths.append(path)
+                else:
+                    start_paths = [self.smbSession.smb_cwd]
 
                 # Prepare filters
                 filters = {}
@@ -161,21 +167,35 @@ class Find(Module):
                 )
 
                 for entry, fullpath, depth, is_last_entry in generator:
-                    # Actions on matches
+                    # Compute the output path relative to the current working directory.
+                    output_path = os.path.relpath(fullpath, start=self.smbSession.smb_cwd)
+                    
+                    # If -ls option is specified, format using ls style, else keep the computed output_path.
+                    if self.options.ls:
+                        # Compute the parent directory portion.
+                        fullpath = PureWindowsPath(os.path.normpath(fullpath)) # Ensure correct Windows-style path handling
+                        
+                        print(self.smbSession.smb_cwd)
+                        parent = os.path.join(*fullpath.parts[:-1])  # Correctly join parts with OS-specific separator
+    
+                        # Force Windows-style separators to avoid mix
+                        parent = parent.replace(os.path.sep, "\\")
+                        
+                        output_str = windows_ls_entry(entry=entry, config=self.config, pathToPrint=parent)
+                    else:
+                        output_str = output_path
+
+                    # If download is enabled, perform file download.
                     if self.options.download:
                         if not entry.is_directory():
                             self.smbSession.get_file(path=fullpath, keepRemotePath=True)
-                    # Output formats
-                    output_str = ""
-                    if self.options.ls:
-                        output_str = windows_ls_entry(entry=entry, config=self.config, pathToPrint=fullpath)
-                    else:
-                        output_str = fullpath.replace(ntpath.sep, '/')
 
+                    # Write to output file if specified.
                     if self.options.outputfile is not None:
                         with open(self.options.outputfile, 'a') as f:
                             f.write(output_str + '\n')
 
+                    # Print the output unless in quiet mode.
                     if not self.options.quiet and not self.options.download:
                         print(output_str)
 
